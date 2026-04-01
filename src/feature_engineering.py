@@ -1,8 +1,26 @@
 """
 Feature engineering for volatility forecasting.
 
-Implements fractional differentiation (Lopez de Prado 2018) and
-the lookback-window construction used by the tabular ML models.
+Key components:
+
+1. **Fractional Differentiation** (Granger & Joyeux 1980; Hosking 1981).
+   The classical stationarity–memory trade-off: integer differencing achieves
+   I(0) but eliminates all long-range dependence.  For a price series X_t ~ I(1),
+   the fractionally differenced series Y_t = (1−L)^d X_t is I(1−d).  Choosing
+   d ∈ (0, 1) produces a covariance-stationary series that retains long memory.
+
+2. **Lookback window construction** — flattens a 3-D panel (time × features × lags)
+   into a 2-D matrix compatible with scikit-learn and gradient-boosted tree APIs.
+
+3. **Purged walk-forward CV** (López de Prado 2018, Ch. 7) — embargo parameter
+   prevents label overlap across train/validation folds when the target is a
+   multi-day aggregation.
+
+References
+----------
+Granger & Joyeux (1980)  : J. Time Series Analysis 1, 15–29.
+Hosking (1981)           : Biometrika 68, 165–176.
+López de Prado (2018)    : Advances in Financial Machine Learning. Wiley.
 """
 from __future__ import annotations
 
@@ -17,14 +35,27 @@ def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-5) -> pd.Series
     """
     Apply fractional differentiation with fixed-width window truncation.
 
-    Standard integer differencing (d=1) achieves stationarity but destroys
-    all long-range memory in the price series.  Fractional differencing with
-    d ∈ (0, 1) achieves stationarity while preserving the maximum amount of
-    memory — a key insight from *Advances in Financial Machine Learning*
-    (Lopez de Prado, 2018, Chapter 5).
+    The fractional differencing operator (1−L)^d is defined via the binomial series
+    (Granger & Joyeux 1980; Hosking 1981):
 
-    The weight vector w_k = Π_{j=0}^{k-1} (d - j) / (j + 1) decays to zero,
-    so we truncate at `thres` to keep computation tractable.
+        (1−L)^d = Σ_{k=0}^∞ C(d, k)·(−L)^k = Σ_{k=0}^∞ w_k·L^k
+
+    where the generalised binomial coefficient gives the recurrence:
+
+        w_0 = 1,   w_k = −w_{k-1} · (d − k + 1) / k
+
+    For d ∈ (0, 1), the weights satisfy |w_k| ~ k^{-(d+1)} / Γ(−d) as k → ∞.
+    This *hyperbolic* decay is slower than the exponential decay of ARMA weights,
+    which is precisely what makes the differenced series long-memory.  The
+    autocorrelation function of (1−L)^d X_t decays as ρ(k) ~ k^{2d−1} — slow
+    enough to be non-summable, yet fast enough for the series to be I(0).
+
+    Standard integer differencing (d=1) forces geometric weights to zero in a
+    single step, destroying all this memory.  Fractional differencing with the
+    *minimum* d that passes an ADF test preserves the maximum memory consistent
+    with stationarity — the goal of `find_min_d`.
+
+    The weight series is truncated at `thres` to keep computation tractable.
 
     Parameters
     ----------
@@ -164,11 +195,16 @@ def walk_forward_cv(
     embargo: int = 5,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """
-    Walk-forward (expanding-window) cross-validation with purging.
+    Walk-forward (expanding-window) cross-validation with purging and embargo.
 
-    The `embargo` parameter removes the last `embargo` rows from each
-    training fold.  This prevents leakage when the target overlaps across
-    adjacent samples (e.g. 5-day realised volatility windows).
+    **Why purging matters for overlapping targets.**  The target in this project
+    is a 5-day forward RV: y_t = std(r_{t+1}, ..., r_{t+5}).  Adjacent samples
+    share four of the five returns, so a model trained on y_t and validated on
+    y_{t+1} has seen almost all of the validation label during training.  The
+    embargo removes the last `embargo` samples from each training fold so that
+    no training label overlaps with any validation label.  This is equivalent
+    to Combinatorial Purged Cross-Validation (López de Prado 2018, Ch. 12)
+    for a single-path expanding window.
 
     Parameters
     ----------

@@ -2,14 +2,118 @@
 Model helpers for the volatility forecasting pipeline.
 
 Provides:
-  - constrained_weights : QLIKE-optimal convex combination of base forecasts
+  - har_rv               : HAR-RV expanding-window predictor (Corsi 2009)
+  - constrained_weights  : QLIKE-optimal convex combination of base forecasts
   - get_monotone_constraints : XGBoost monotone constraint vector for
                                flattened lookback features
+
+References
+----------
+Corsi (2009)            : A simple approximate long-memory model of realized
+                          volatility. J. Financial Econometrics 7, 174–196.
+Müller et al. (1997)    : Volatilities of different time resolutions.
+                          J. Empirical Finance 4, 213–239.
+Patton (2011)           : Volatility forecast comparison using imperfect proxies.
+                          J. Econometrics 160, 246–256.
 """
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize
+
+
+def har_rv(
+    rv: pd.Series,
+    burnin: int = 252,
+    daily_lag: int = 1,
+    weekly_lag: int = 5,
+    monthly_lag: int = 22,
+) -> pd.Series:
+    """
+    Expanding-window HAR-RV predictor (Corsi 2009).
+
+    The Heterogeneous Autoregressive model for Realized Volatility decomposes
+    the volatility signal into three components operated at different time scales:
+
+        RV_{t+1} = c + β_D·RV^(d)_t + β_W·RV^(w)_t + β_M·RV^(m)_t + ε_{t+1}
+
+    where:
+      - RV^(d)_t = RV_t                              (daily component)
+      - RV^(w)_t = (1/5)·ΣRV_{t-j}, j=0..4          (weekly component)
+      - RV^(m)_t = (1/22)·ΣRV_{t-j}, j=0..21        (monthly component)
+
+    **Why HAR captures long memory without being long-memory.**  The Heterogeneous
+    Market Hypothesis (Müller et al. 1997) posits that daily traders, weekly
+    portfolio managers, and monthly institutions react to volatility at different
+    horizons.  Aggregating their linear responses produces an ARMA-like model
+    whose autocorrelation function decays so slowly that it *mimics* the
+    hyperbolic decay of a true long-memory process — but with only three free
+    parameters.  This parsimony explains why HAR consistently outperforms richer
+    GARCH variants in realized-measure settings (Andersen et al. 2003).
+
+    The model is estimated by OLS on an expanding window.  Refitting at every
+    step is O(T²) but unavoidable for a strict out-of-sample evaluation.
+
+    Parameters
+    ----------
+    rv : pd.Series
+        Daily realised volatility series, indexed by date.
+    burnin : int
+        Minimum observations before the first OLS fit (default: 1 trading year).
+    daily_lag : int
+        Lag for the daily RV component (default: 1).
+    weekly_lag : int
+        Rolling window for the weekly component (default: 5).
+    monthly_lag : int
+        Rolling window for the monthly component (default: 22).
+
+    Returns
+    -------
+    pd.Series
+        One-step-ahead HAR-RV forecasts, aligned with `rv.index`.
+        Values before the burn-in period are NaN.
+
+    Notes
+    -----
+    This implementation forecasts the *same* target as the ML models
+    (next-day RV5), not daily RV.  For a proper literature comparison
+    using intraday realized kernels, replace `rv` with tick-level estimates
+    (Barndorff-Nielsen et al. 2008).
+    """
+    rv_arr = rv.to_numpy(dtype=float)
+    n = len(rv_arr)
+    forecasts = np.full(n, np.nan)
+
+    for t in range(burnin, n - 1):
+        # Build multi-scale components up to and including t
+        rv_d = rv_arr[t - daily_lag + 1 : t + 1].mean()
+        rv_w = rv_arr[max(0, t - weekly_lag + 1) : t + 1].mean()
+        rv_m = rv_arr[max(0, t - monthly_lag + 1) : t + 1].mean()
+
+        # Design matrix: [1, RV_d, RV_w, RV_m] for each past row up to t
+        rows = []
+        for i in range(monthly_lag, t + 1):
+            rd = rv_arr[i - daily_lag + 1 : i + 1].mean()
+            rw = rv_arr[max(0, i - weekly_lag + 1) : i + 1].mean()
+            rm = rv_arr[max(0, i - monthly_lag + 1) : i + 1].mean()
+            rows.append([1.0, rd, rw, rm])
+
+        X_fit = np.array(rows[:-1])              # features up to t-1
+        y_fit = rv_arr[monthly_lag + 1 : t + 1]  # targets: RV_{t+1}
+
+        if len(y_fit) < 4:  # need at least 4 obs for 4-parameter OLS
+            continue
+
+        # OLS via normal equations: β = (X'X)^{-1} X'y
+        try:
+            beta, *_ = np.linalg.lstsq(X_fit, y_fit, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+
+        forecasts[t + 1] = max(beta[0] + beta[1] * rv_d + beta[2] * rv_w + beta[3] * rv_m, 0.0)
+
+    return pd.Series(forecasts, index=rv.index, name="HAR_RV")
 
 
 def constrained_weights(
@@ -90,7 +194,11 @@ def get_monotone_constraints(
     Example
     -------
     >>> get_monotone_constraints(['GK_Vol', 'Log_Ret'], 2, {'GK_Vol': 1, 'Log_Ret': -1})
-    (1, 1, -1, -1)
+    (1, -1, 1, -1)
+
+    The pattern interleaves by lag step (matching ``build_lookback_windows``
+    which calls ``.ravel()`` on an ``(lookback, n_features)`` slice):
+    lag-0 features first, then lag-1, etc.
     """
     per_step = [constraint_map.get(col, 0) for col in feature_cols]
     return tuple(per_step * lookback)
