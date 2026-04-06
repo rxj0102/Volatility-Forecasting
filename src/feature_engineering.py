@@ -79,8 +79,8 @@ def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-5) -> pd.Series
         w = -weights[-1] * (d - k + 1) / k
         weights.append(w)
         k += 1
-    # weights[0] applies to the most recent observation
-    weights = np.array(weights[::-1], dtype=float)  # oldest weight first
+    weights = np.array(weights[::-1], dtype=float)
+    # After reversal: weights[0] = oldest-lag coefficient, weights[-1] = w_0 = 1.0 (most recent)
 
     n = len(series)
     w_len = len(weights)
@@ -126,6 +126,12 @@ def find_min_d(
     -------
     float
         Minimum d achieving stationarity, or `d_end` if none found.
+
+    Warnings
+    --------
+    Pass only **training-fold data** to avoid look-ahead bias.  Calling this
+    function on the full time series (including validation or test observations)
+    causes d* to be selected with knowledge of future data.
     """
     for d in np.linspace(d_start, d_end, n_steps):
         fd = frac_diff_vec(series, float(d), thres).dropna()

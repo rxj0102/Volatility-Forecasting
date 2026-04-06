@@ -64,6 +64,15 @@ def test_har_rv_nans_during_burnin(rv_series):
     assert result.iloc[:burnin].isna().all()
 
 
+def test_har_rv_first_forecast_at_burnin(rv_series):
+    """First non-NaN forecast must appear at index burnin (not burnin+1)."""
+    burnin = 252
+    result = har_rv(rv_series, burnin=burnin)
+    assert not np.isnan(result.iloc[burnin]), (
+        f"Expected first forecast at iloc[{burnin}], got NaN"
+    )
+
+
 def test_har_rv_forecasts_positive(rv_series):
     """All non-NaN forecasts must be non-negative (clipped at 0)."""
     result = har_rv(rv_series).dropna()
@@ -82,6 +91,35 @@ def test_har_rv_forecast_reasonable_magnitude(rv_series):
     """Forecasts should be in the same ballpark as the input series."""
     result = har_rv(rv_series).dropna()
     assert result.mean() == pytest.approx(rv_series.mean(), rel=0.5)
+
+
+def test_har_rv_forecast_matches_ols(rv_series):
+    """First forecast must equal the OLS prediction from the manual calculation."""
+    burnin = 252
+    daily_lag, weekly_lag, monthly_lag = 1, 5, 22
+    rv_arr = rv_series.to_numpy(dtype=float)
+
+    result = har_rv(rv_series, burnin=burnin)
+
+    # Replicate the first iteration: t = burnin - 1, forecast → forecasts[burnin]
+    t = burnin - 1
+    rows = []
+    for i in range(monthly_lag, t + 1):
+        rd = rv_arr[i - daily_lag + 1 : i + 1].mean()
+        rw = rv_arr[max(0, i - weekly_lag + 1) : i + 1].mean()
+        rm = rv_arr[max(0, i - monthly_lag + 1) : i + 1].mean()
+        rows.append([1.0, rd, rw, rm])
+
+    X_fit = np.array(rows[:-1])
+    y_fit = rv_arr[monthly_lag + 1 : t + 1]
+    beta, *_ = np.linalg.lstsq(X_fit, y_fit, rcond=None)
+
+    rv_d = rv_arr[t - daily_lag + 1 : t + 1].mean()
+    rv_w = rv_arr[max(0, t - weekly_lag + 1) : t + 1].mean()
+    rv_m = rv_arr[max(0, t - monthly_lag + 1) : t + 1].mean()
+    expected = max(beta[0] + beta[1] * rv_d + beta[2] * rv_w + beta[3] * rv_m, 0.0)
+
+    assert result.iloc[burnin] == pytest.approx(expected, rel=1e-6)
 
 
 # ── constrained_weights ───────────────────────────────────────────────────────

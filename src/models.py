@@ -18,6 +18,8 @@ Patton (2011)           : Volatility forecast comparison using imperfect proxies
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -85,7 +87,7 @@ def har_rv(
     n = len(rv_arr)
     forecasts = np.full(n, np.nan)
 
-    for t in range(burnin, n - 1):
+    for t in range(burnin - 1, n - 1):
         # Build multi-scale components up to and including t
         rv_d = rv_arr[t - daily_lag + 1 : t + 1].mean()
         rv_w = rv_arr[max(0, t - weekly_lag + 1) : t + 1].mean()
@@ -158,6 +160,13 @@ def constrained_weights(
         constraints={"type": "eq", "fun": lambda w: w.sum() - 1},
         options={"ftol": 1e-9, "maxiter": 500},
     )
+    if not result.success:
+        warnings.warn(
+            f"constrained_weights: optimizer did not converge — {result.message}. "
+            "Returning best-found weights; results may be suboptimal.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return result.x
 
 

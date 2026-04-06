@@ -10,6 +10,8 @@ Patton (2011)   : Volatility forecast comparison using imperfect proxies.
 Diebold-Mariano : Comparing predictive accuracy.
                   J. Bus. Econ. Stat. 13, 253–263 (1995).
 """
+import warnings
+
 import numpy as np
 from scipy import stats
 
@@ -134,6 +136,13 @@ def diebold_mariano(
 def report(name: str, y_true: np.ndarray, y_pred: np.ndarray) -> None:
     """Print a one-line metric summary for a named model."""
     n = min(len(y_true), len(y_pred))
+    if len(y_true) != len(y_pred):
+        warnings.warn(
+            f"report: length mismatch (y_true={len(y_true)}, y_pred={len(y_pred)}); "
+            f"truncating both to {n}.",
+            UserWarning,
+            stacklevel=2,
+        )
     yt, yp = y_true[:n], y_pred[:n]
     print(
         f"{name:<30}  RMSE={rmse(yt, yp):.6f}  "

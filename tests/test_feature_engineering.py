@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from statsmodels.tsa.stattools import adfuller
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from feature_engineering import (
@@ -93,6 +94,16 @@ def test_find_min_d_in_range(random_series):
     assert 0.1 <= d <= 1.0
 
 
+def test_find_min_d_achieves_stationarity(random_series):
+    """The returned d must produce a series that passes the ADF test at the 5% level."""
+    d = find_min_d(random_series, n_steps=10)
+    fd = frac_diff_vec(random_series, d).dropna()
+    p_value = adfuller(fd, maxlag=1, autolag=None)[1]
+    assert p_value <= 0.05, (
+        f"find_min_d returned d={d} but ADF p-value={p_value:.4f} > 0.05"
+    )
+
+
 # ── build_lookback_windows ────────────────────────────────────────────────────
 
 def test_lookback_output_shapes(simple_df):
@@ -147,13 +158,16 @@ def test_walk_forward_cv_no_overlap():
 
 
 def test_walk_forward_cv_embargo():
-    """Training indices must end at least `embargo` steps before validation."""
+    """Training indices must end at least `embargo` steps before validation starts."""
     X = np.zeros((100, 5))
     y = np.zeros(100)
     embargo = 5
     for tr_idx, val_idx in walk_forward_cv(X, y, n_splits=3, embargo=embargo):
         if len(tr_idx) > 0 and len(val_idx) > 0:
-            assert tr_idx[-1] < val_idx[0]
+            # Gap must be strictly greater than embargo (TimeSeriesSplit already
+            # ensures no overlap, so without embargo the gap would be 1; with
+            # embargo applied the gap must be > embargo).
+            assert val_idx[0] - tr_idx[-1] > embargo
 
 
 # ── make_oof_predictions ──────────────────────────────────────────────────────
