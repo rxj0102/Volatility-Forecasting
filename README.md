@@ -189,6 +189,26 @@ Volatility-Forecasting/
 
 ---
 
+## Production Pipeline
+
+An automated daily retraining pipeline wraps the GJR-GARCH + XGBoost ensemble for
+live use.  Every run downloads the latest 5 years of SPY data, retrains both models,
+blends their forecasts with QLIKE-optimal weights, and appends the result to a
+persistent forecast log.
+
+```bash
+# One-shot daily forecast (appends to outputs/forecast_log.csv)
+python -m pipeline.daily_pipeline
+
+# Populate the last 2 years of IS/OOS forecasts
+python -m pipeline.backfill
+```
+
+See [pipeline/README.md](pipeline/README.md) for full documentation: CSV column
+definitions, IS vs OOS split methodology, evaluation snippets, and cron scheduling.
+
+---
+
 ## Quick Start
 
 ```bash
