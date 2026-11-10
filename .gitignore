@@ -18,7 +18,8 @@ models/*.pkl
 models/*.joblib
 
 # Data (downloaded at runtime)
-data/
+data/*
+!data/snapshot/
 
 # IDE
 .vscode/
