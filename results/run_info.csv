@@ -1,0 +1,8 @@
+,value
+frac_diff_d,0.7
+n_regimes,5
+n_train,1645
+n_test,412
+train_start,2016-10-24
+test_start,2023-05-09
+test_end,2024-12-26
