@@ -191,3 +191,11 @@ def test_make_oof_non_zero():
     y = rng.random(80) + 1.0
     oof = make_oof_predictions(Ridge(), X, y, n_splits=3, embargo=3)
     assert np.any(oof != 0.0)
+
+
+def test_frac_diff_default_keeps_most_of_a_decade():
+    """The truncation window must not swallow most of a 10-year daily sample."""
+    from feature_engineering import frac_diff_vec
+    x = pd.Series(np.cumsum(np.random.default_rng(0).normal(size=2761)))
+    lost = int(frac_diff_vec(x, 0.3).isna().sum())
+    assert lost < 500
