@@ -13,7 +13,6 @@ xgboost>=2.0
 lightgbm>=4.1
 
 # Data
-yfinance>=0.2.36
 
 # Utilities
 joblib>=1.3
