@@ -199,3 +199,13 @@ def test_frac_diff_default_keeps_most_of_a_decade():
     x = pd.Series(np.cumsum(np.random.default_rng(0).normal(size=2761)))
     lost = int(frac_diff_vec(x, 0.3).isna().sum())
     assert lost < 500
+
+
+def test_find_min_d_respects_min_obs():
+    """A small d with a window that consumes most of the sample must be skipped."""
+    rng = np.random.default_rng(0)
+    s = pd.Series(np.cumsum(rng.standard_normal(1500)) + 100.0)
+    d_free = find_min_d(s)
+    d_guarded = find_min_d(s, min_obs=1000)
+    assert d_guarded >= d_free
+    assert frac_diff_vec(s, d_guarded).dropna().shape[0] >= 1000

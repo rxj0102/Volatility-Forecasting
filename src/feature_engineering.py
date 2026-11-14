@@ -100,11 +100,12 @@ def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-4) -> pd.Series
 
 def find_min_d(
     series: pd.Series,
-    thres: float = 1e-5,
+    thres: float = 1e-4,
     d_start: float = 0.1,
     d_end: float = 1.0,
     n_steps: int = 10,
     adf_pval: float = 0.05,
+    min_obs: int = 30,
 ) -> float:
     """
     Grid-search for the minimum fractional order d that yields stationarity.
@@ -125,6 +126,10 @@ def find_min_d(
         Number of candidate values between d_start and d_end.
     adf_pval : float
         ADF significance level (default 5%).
+    min_obs : int
+        Minimum number of observations that must survive the weight window.
+        With thres = 1e-5 the window for d = 0.3 is about 2,300 days, so a
+        small d can leave a sample too short to use that still passes ADF.
 
     Returns
     -------
@@ -139,7 +144,7 @@ def find_min_d(
     """
     for d in np.linspace(d_start, d_end, n_steps):
         fd = frac_diff_vec(series, float(d), thres).dropna()
-        if len(fd) < 30:
+        if len(fd) < max(30, min_obs):
             continue
         p_value = adfuller(fd, maxlag=1, autolag=None)[1]
         if p_value <= adf_pval:
