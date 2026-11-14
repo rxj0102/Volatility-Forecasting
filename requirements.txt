@@ -20,3 +20,6 @@ joblib>=1.3
 # Visualisation
 matplotlib>=3.7
 seaborn>=0.13
+
+# Testing
+pytest>=7.4
