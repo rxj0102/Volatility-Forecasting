@@ -175,3 +175,25 @@ def test_monotone_constraints_unconstrained_zero():
 def test_monotone_constraints_returns_tuple():
     result = get_monotone_constraints(["a", "b"], 2, {})
     assert isinstance(result, tuple)
+
+
+# ── naive_forecasts ───────────────────────────────────────────────────────────
+
+from models import naive_forecasts
+
+
+def test_naive_forecasts_use_only_information_through_d_minus_1(rv_series):
+    dates = rv_series.index[300:400]
+    har = har_rv(rv_series)
+    base = naive_forecasts(rv_series, dates, har=har)
+    d = dates[50]
+    shocked = rv_series.copy()
+    shocked.loc[d:] *= 10.0  # change day d and everything after it
+    alt = naive_forecasts(shocked, dates, har=har_rv(shocked))
+    pd.testing.assert_frame_equal(base.loc[:d], alt.loc[:d])
+
+
+def test_random_walk_is_previous_value(rv_series):
+    dates = rv_series.index[100:110]
+    out = naive_forecasts(rv_series, dates)
+    assert np.allclose(out["Random walk"].values, rv_series.shift(1).loc[dates].values)

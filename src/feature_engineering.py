@@ -31,7 +31,7 @@ from statsmodels.tsa.stattools import adfuller
 
 # ── Fractional Differentiation ────────────────────────────────────────────────
 
-def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-5) -> pd.Series:
+def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-4) -> pd.Series:
     """
     Apply fractional differentiation with fixed-width window truncation.
 
@@ -56,6 +56,10 @@ def frac_diff_vec(series: pd.Series, d: float, thres: float = 1e-5) -> pd.Series
     with stationarity — the goal of `find_min_d`.
 
     The weight series is truncated at `thres` to keep computation tractable.
+    The first ``len(weights) - 1`` outputs are NaN, so `thres` sets how much
+    history is lost. At 1e-5 and d = 0.3 the window is about 2,300 days,
+    which leaves only a few months of a 2014 to 2024 daily sample; the
+    default 1e-4 keeps the window under 400 days for d >= 0.3.
 
     Parameters
     ----------
