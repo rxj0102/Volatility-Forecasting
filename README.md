@@ -1,5 +1,7 @@
 # Volatility Forecasting — SPY Multi-Model Engine
 
+[![CI](https://github.com/rxj0102/Volatility-Forecasting/actions/workflows/ci.yml/badge.svg)](https://github.com/rxj0102/Volatility-Forecasting/actions/workflows/ci.yml)
+
 > Can gradient-boosted trees reliably outperform GARCH on next-day realized volatility?  
 > A rigorous ML pipeline with strict temporal validation, regime detection, and a robust stacking ensemble.
 
