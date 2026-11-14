@@ -13,7 +13,7 @@ This project makes four concrete methodological contributions over a naive "just
 
 2. **Memory-preserving stationarity via fractional differentiation.** Log-price is differenced to order d* = argmin{d : ADF p ≤ 0.05}, found by grid search on the training fold. For d ∈ (0, 1) the binomial weight sequence decays hyperbolically (|w_k| ~ k^{-(d+1)}) rather than exponentially, retaining long-range dependence that integer differencing destroys.
 
-3. **Domain-constrained ensemble (Entropy model).** Monotone constraints on the leverage effect (GK_Vol → +1; Log_Ret → −1) are encoded as hard priors in XGBoost's tree-split rules — not as soft regularisation. This guarantees financial interpretability without sacrificing predictive power and outperforms the unconstrained model in QLIKE.
+3. **Domain-constrained ensemble (Entropy model).** A monotone constraint on the leverage effect (Log_Ret: -1) is encoded as a hard prior in XGBoost's tree-split rules, not as soft regularisation. On the open data run it costs accuracy: QLIKE 0.0778 vs 0.0652 for unconstrained XGBoost.
 
 4. **Leakage-aware stacking.** OOF base-model predictions are generated with a 5-day embargo matching the RV aggregation horizon, then combined by a Huber meta-learner operating in volatility (not log-volatility) space. This prevents the tail-compression artefact that biases log-space meta-learners during vol-spike regimes.
 
@@ -30,17 +30,20 @@ The central question is not whether ML *can* beat GARCH — it can, in-sample, t
 ## Methodology
 
 ### Data
-- **Asset:** SPY ETF — daily OHLCV, 2014–2024 (~2,500 trading days)
+Free open data only (no Yahoo Finance, no API key), loaded by `src/opendata.py`:
+
+- **Asset (SPY stand in):** Ken French Data Library US market total return (Mkt-RF + RF), daily closes, 2014 to 2024 (2,762 days)
 - **Target:** 5-day realised volatility shifted one day forward: `Target_RV5 = RV5.shift(-1)`
-- **Cross-asset signals:** VIX (^VIX), VIX3M term structure (^VIX3M), HYG/IEF credit stress ratio
+- **Cross-asset signals:** VIX (FRED VIXCLS), VIX / VIX3M term structure (FRED VIXCLS and VXVCLS), credit stress as the Moody's Baa minus 10y Treasury spread (FRED BAA10Y, replacing the HYG/IEF ratio)
+
+The open sources publish closes only, so the OHLC estimators below (Garman-Klass, Parkinson, overnight gap) are not used in the open data run. Vol of vol is computed from RV5 instead of Garman-Klass.
 
 ### Volatility Estimators
 
 | Estimator | Formula | Property |
 |---|---|---|
-| Garman-Klass | `√(½·ln²(H/L) − (2ln2−1)·ln²(C/O))` | ~7× lower variance than close-to-close; BLUE under GBM |
-| Parkinson | `√(ln²(H/L) / 4ln2)` | Range-only; efficient proxy for intraday stress |
-| Overnight Gap | `\|ln(Open_t / Close_{t-1})\|` | Captures jump risk and after-hours information |
+| Close-to-close RV5 | 5-day rolling std of log returns | Used as feature and target |
+| Garman-Klass, Parkinson, overnight gap | need open, high, low | Not used: no open data source for SPY OHLC |
 | GARCH(1,1)-t | `σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}`, t-innovations | Expanding window, monthly refit (every 21 days) |
 
 ### Feature Engineering
@@ -53,7 +56,7 @@ The fractional differencing operator `(1−L)^d` has the binomial expansion:
 (1−L)^d = Σ_{k=0}^∞ w_k L^k,   w_k = (−1)^k · Γ(d+1) / [Γ(k+1)·Γ(d−k+1)]
 ```
 
-with the recurrence `w_k = −w_{k-1} · (d−k+1) / k`. For `d ∈ (0,1)`, weights decay as `|w_k| ~ k^{-(d+1)}` — hyperbolic, not exponential — so the series retains long-range dependence (i.e. is not weakly dependent) while being covariance-stationary. The minimum `d*` is found by ADF grid search on the training fold only.
+with the recurrence `w_k = −w_{k-1} · (d−k+1) / k`. For `d ∈ (0,1)`, weights decay as `|w_k| ~ k^{-(d+1)}`, hyperbolic rather than exponential, so the series retains long-range dependence (i.e. is not weakly dependent) while being covariance-stationary. The minimum `d*` is found by ADF grid search on the training fold only. The weight truncation threshold is 1e-4 (389 lags at d = 0.3); at the 1e-5 default the warm-up window is 2,276 lags and leaves only a few months of samples on 2014 to 2024 data.
 
 **Variance Risk Premium (VRP)**
 
@@ -96,17 +99,36 @@ Each sample at date t contains the values of all `p` features for the preceding 
 
 ## Key Results
 
-| Model | RMSE | QLIKE | MAPE |
-|---|---|---|---|
-| GARCH(1,1)-t | 0.002793 | −8.746 | 40.9% |
-| XGBoost | **0.002334** | **−8.768** | 28.3% |
-| LightGBM GBDT | 0.002441 | −8.743 | 28.9% |
-| **Entropy (monotone XGB)** | 0.002511 | −8.736 | 30.5% |
-| Q50 (median quantile) | 0.002156 | −8.805 | 25.6% |
-| Stacking — Ridge meta | 0.003313 | −8.537 | 39.6% |
-| Sovereign Prime | 0.003535 | −8.434 | 48.1% |
+Copied from the executed notebook `notebooks/01_volatility_forecasting.ipynb` (open data run). Train 2016-11-15 to 2023-05-12 (1,633 samples), test 2023-05-15 to 2024-12-27 (409 samples). Fractional differencing order d* = 0.3 (ADF p = 0.0003); GMM picked 5 regimes by BIC.
 
-> **Finding:** GARCH is a formidable benchmark. XGBoost achieves a 16% RMSE improvement and a small but consistent QLIKE gain. The monotone-constrained Entropy model trades a ~1% QLIKE drop for full financial interpretability — a favourable tradeoff in production. The stacking ensembles underperform base models, consistent with findings in Rapach & Zhou (2013): combining forecasts helps more in equity return prediction than in volatility, where GARCH already captures the first-order dynamics well.
+| Model | RMSE | MAE | QLIKE | MAPE |
+|---|---|---|---|---|
+| GARCH(1,1)-t | 0.002879 | 0.002239 | 0.0745 | 40.96% |
+| XGBoost | **0.002443** | **0.001816** | 0.0652 | **26.94%** |
+| LightGBM GBDT | 0.002498 | 0.001844 | 0.0645 | 27.87% |
+| Entropy (monotone XGB) | 0.002677 | 0.002036 | 0.0778 | 30.46% |
+| Q50 (median quantile) | 0.002496 | 0.001881 | **0.0622** | 27.37% |
+| Stacking (Ridge meta) | 0.003583 | 0.002896 | 0.1068 | 52.21% |
+| Sovereign Prime (Huber meta) | 0.003485 | 0.002859 | 0.1055 | 55.25% |
+
+QLIKE here is the loss form E[s/h - log(s/h) - 1], so lower is better and zero is a perfect forecast.
+
+**Diebold-Mariano tests against GARCH(1,1)-t** (positive = model more accurate than GARCH; Newey-West bandwidth 4 for the 5-day overlapping target, with a 21-lag bandwidth as a robustness check):
+
+| Model | QLIKE DM | p (h=5) | p (h=22) | MSE DM | p (h=5) | p (h=22) |
+|---|---|---|---|---|---|---|
+| XGBoost | 1.05 | 0.294 | 0.227 | 2.61 | 0.009 | 0.006 |
+| LightGBM GBDT | 1.20 | 0.230 | 0.140 | 2.33 | 0.020 | 0.005 |
+| Entropy (monotone XGB) | -0.35 | 0.730 | 0.713 | 1.17 | 0.243 | 0.241 |
+| Q50 (median quantile) | 1.50 | 0.134 | 0.088 | 2.17 | 0.030 | 0.018 |
+| Stacking (Ridge meta) | -3.54 | 0.000 | 0.003 | -2.94 | 0.003 | 0.004 |
+| Sovereign Prime | -3.77 | 0.000 | 0.003 | -3.04 | 0.002 | 0.004 |
+
+**Calibrated intervals.** The raw XGBoost 10% to 90% quantile band covers only 66.99% of test days. Conformalized quantile regression (fit on the first 80% of the training window, calibrated on the last 326 days) widens it by 0.149 in log-vol and brings test coverage to 81.66% against the 80% target; the median width rises from 0.00409 to 0.00583.
+
+> **Finding:** XGBoost cuts GARCH's RMSE by 15% and QLIKE by 12%, and the median quantile model has the lowest QLIKE. The gradient-boosted models beat GARCH significantly on MSE (p 0.005 to 0.03) but not on QLIKE (p 0.09 to 0.29). QLIKE is the loss that ranks models consistently when realised vol is a noisy proxy (Patton 2011), so the honest summary is: better point forecasts, but no significant edge on the robust loss. The monotone constrained model is no better than GARCH, and both stacking ensembles are significantly worse than GARCH on both losses. Residual autocorrelation is strong (Ljung-Box p near 0 at lags 5 and 10), so all models leave predictable structure on the table.
+
+> **Correction (Nov 2026).** `diebold_mariano()` floored the long-run variance at 1e-8. MSE loss differentials on daily vol are around 1e-5, so their variance is far below that floor, and every MSE test statistic was pushed toward zero. The floor is removed (with a fallback for a non-positive Newey-West sum), and a regression test covers it.
 
 ---
 
@@ -136,7 +158,7 @@ The Diebold-Mariano (1995) test uses the loss differential `d_t = L(e1_t) − L(
 DM = d̄ / √(σ²_d / T)  →  N(0, 1)  under H0: E[d_t] = 0
 ```
 
-Critically, Patton (2011) shows that QLIKE (unlike RMSE) produces *valid* DM tests even when the target `RV5` is a noisy proxy for the latent variance — the ranking is invariant to the proxy noise. The `src/metrics.py::diebold_mariano()` function is already implemented in this repo. Applying it systematically would reveal that many of the ensemble-vs-GARCH differences are not statistically significant at the 5% level — a finding with direct implications for model selection in production.
+Critically, Patton (2011) shows that QLIKE (unlike RMSE) produces *valid* DM tests even when the target `RV5` is a noisy proxy for the latent variance — the ranking is invariant to the proxy noise. This is now done (section 7c of the notebook, table above).
 
 ### 3 — Economic Value: Volatility-Targeting Backtest
 
@@ -159,7 +181,7 @@ Comparing Sharpe ratios and maximum drawdowns across model forecasts closes the 
 
 | Category | Library |
 |---|---|
-| Data | `yfinance`, `pandas` |
+| Data | FRED and Ken French via `src/opendata.py`, `pandas` |
 | Econometrics | `arch`, `statsmodels` |
 | ML | `scikit-learn`, `xgboost`, `lightgbm` |
 | Numerics | `numpy`, `scipy` |
@@ -177,12 +199,13 @@ Volatility-Forecasting/
 ├── src/
 │   ├── metrics.py                         # rmse, mae, qlike, mape, diebold_mariano, report
 │   ├── feature_engineering.py             # frac_diff, lookback windows, CV utilities
+│   ├── opendata.py                        # FRED and Ken French loaders
 │   └── models.py                          # constrained_weights, har_rv, monotone constraints
 ├── tests/
 │   ├── test_metrics.py
 │   └── test_feature_engineering.py
 ├── models/                                # Serialised artefacts — gitignored
-├── data/                                  # Downloaded at runtime via yfinance
+├── data/open_cache/                       # FRED and Ken French downloads (gitignored)
 ├── requirements.txt
 └── README.md
 ```
@@ -203,7 +226,7 @@ pip install -r requirements.txt
 # 3. Run tests
 pytest tests/ -v
 
-# 4. Launch the notebook (data is downloaded automatically — no API key needed)
+# 4. Launch the notebook (open data is downloaded automatically, no API key needed)
 cd notebooks && jupyter lab 01_volatility_forecasting.ipynb
 ```
 

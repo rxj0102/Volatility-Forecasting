@@ -180,3 +180,15 @@ def test_dm_length_mismatch_raises():
     y2 = np.ones(11) * 0.02
     with pytest.raises(ValueError, match="same length"):
         diebold_mariano(y1, y1, y2)
+
+
+def test_dm_mse_not_floored_for_small_losses():
+    """MSE differentials on daily vol are tiny; the test must still detect a clear winner."""
+    import numpy as np
+    from metrics import diebold_mariano
+    rng = np.random.default_rng(0)
+    y = 0.01 + 0.002 * rng.standard_normal(500)
+    good = y + 0.0005 * rng.standard_normal(500)
+    bad = y + 0.002 * rng.standard_normal(500)
+    stat, p = diebold_mariano(y, bad, good, loss="mse", h=5)
+    assert stat > 5 and p < 1e-6
