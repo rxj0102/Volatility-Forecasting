@@ -51,12 +51,12 @@ Logs are written to `outputs/pipeline.log`.  Forecasts are appended to
 | Column | Type | Description |
 |--------|------|-------------|
 | `forecast_as_of` | date | Last trading day with available market data when the pipeline ran |
-| `target_date` | date | The next business day — the date being forecast |
+| `target_date` | date | The next business day, the date being forecast |
 | `garch_forecast` | float | GJR-GARCH(1,1,1)-t one-step-ahead annualised volatility |
 | `xgb_forecast` | float | XGBoost log-vol model forecast (annualised, in vol space) |
 | `ensemble_forecast` | float | QLIKE-optimal convex blend: `w_GARCH · σ̂_GARCH + w_XGB · σ̂_XGB` |
 | `realized_rv5` | float | Actual 5-day rolling close-to-close vol on `target_date` (back-filled on subsequent runs; empty until observable) |
-| `split` | string | `IS` or `OOS` — see below |
+| `split` | string | `IS` or `OOS`, see below |
 | `run_timestamp` | datetime | UTC timestamp of pipeline execution |
 
 All volatility values are **annualised** (multiplied by √252) and expressed as
