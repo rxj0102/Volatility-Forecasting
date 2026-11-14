@@ -244,3 +244,11 @@ cd notebooks && jupyter lab 01_volatility_forecasting.ipynb
 - López de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley.
 - Müller, U. A., et al. (1997). Volatilities of different time resolutions — analyzing the dynamics of market components. *Journal of Empirical Finance*, 4(2–3), 213–239.
 - Patton, A. J. (2011). Volatility forecast comparison using imperfect volatility proxies. *Journal of Econometrics*, 160(1), 246–256.
+
+## Data snapshot
+
+`data/open_data_manifest.json` records every open data file behind the results above (SHA-256, rows, first and last date). Ken French and FRED occasionally revise history; after a fresh download, check whether the inputs still match with:
+
+```bash
+python -c "from src.opendata import verify_manifest; print(verify_manifest('data/open_data_manifest.json'))"
+```
