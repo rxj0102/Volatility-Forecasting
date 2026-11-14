@@ -111,9 +111,24 @@ Copied from the executed notebook `notebooks/01_volatility_forecasting.ipynb` (o
 | Stacking (Ridge meta) | 0.003583 | 0.002896 | 0.1068 | 52.21% |
 | Sovereign Prime (Huber meta) | 0.003485 | 0.002859 | 0.1055 | 55.25% |
 
-QLIKE here is the loss form E[s/h - log(s/h) - 1], so lower is better and zero is a perfect forecast. The 80% quantile interval covers 66.99% of test days (target 80%), so the intervals are too narrow.
+QLIKE here is the loss form E[s/h - log(s/h) - 1], so lower is better and zero is a perfect forecast.
 
-> **Finding:** XGBoost cuts GARCH's RMSE by 15% and QLIKE by 12%, and the median quantile model has the lowest QLIKE. The monotone constrained model is worse than unconstrained XGBoost on every metric, and both stacking ensembles are clearly worse than their base models. No Diebold-Mariano test was run, so these gaps are point estimates. Residual autocorrelation is strong (Ljung-Box p near 0 at lags 5 and 10), so all models leave predictable structure on the table.
+**Diebold-Mariano tests against GARCH(1,1)-t** (positive = model more accurate than GARCH; Newey-West bandwidth 4 for the 5-day overlapping target, with a 21-lag bandwidth as a robustness check):
+
+| Model | QLIKE DM | p (h=5) | p (h=22) | MSE DM | p (h=5) | p (h=22) |
+|---|---|---|---|---|---|---|
+| XGBoost | 1.05 | 0.294 | 0.227 | 2.61 | 0.009 | 0.006 |
+| LightGBM GBDT | 1.20 | 0.230 | 0.140 | 2.33 | 0.020 | 0.005 |
+| Entropy (monotone XGB) | -0.35 | 0.730 | 0.713 | 1.17 | 0.243 | 0.241 |
+| Q50 (median quantile) | 1.50 | 0.134 | 0.088 | 2.17 | 0.030 | 0.018 |
+| Stacking (Ridge meta) | -3.54 | 0.000 | 0.003 | -2.94 | 0.003 | 0.004 |
+| Sovereign Prime | -3.77 | 0.000 | 0.003 | -3.04 | 0.002 | 0.004 |
+
+**Calibrated intervals.** The raw XGBoost 10% to 90% quantile band covers only 66.99% of test days. Conformalized quantile regression (fit on the first 80% of the training window, calibrated on the last 326 days) widens it by 0.149 in log-vol and brings test coverage to 81.66% against the 80% target; the median width rises from 0.00409 to 0.00583.
+
+> **Finding:** XGBoost cuts GARCH's RMSE by 15% and QLIKE by 12%, and the median quantile model has the lowest QLIKE. The gradient-boosted models beat GARCH significantly on MSE (p 0.005 to 0.03) but not on QLIKE (p 0.09 to 0.29). QLIKE is the loss that ranks models consistently when realised vol is a noisy proxy (Patton 2011), so the honest summary is: better point forecasts, but no significant edge on the robust loss. The monotone constrained model is no better than GARCH, and both stacking ensembles are significantly worse than GARCH on both losses. Residual autocorrelation is strong (Ljung-Box p near 0 at lags 5 and 10), so all models leave predictable structure on the table.
+
+> **Correction (Nov 2026).** `diebold_mariano()` floored the long-run variance at 1e-8. MSE loss differentials on daily vol are around 1e-5, so their variance is far below that floor, and every MSE test statistic was pushed toward zero. The floor is removed (with a fallback for a non-positive Newey-West sum), and a regression test covers it.
 
 ---
 
@@ -143,7 +158,7 @@ The Diebold-Mariano (1995) test uses the loss differential `d_t = L(e1_t) − L(
 DM = d̄ / √(σ²_d / T)  →  N(0, 1)  under H0: E[d_t] = 0
 ```
 
-Critically, Patton (2011) shows that QLIKE (unlike RMSE) produces *valid* DM tests even when the target `RV5` is a noisy proxy for the latent variance — the ranking is invariant to the proxy noise. The `src/metrics.py::diebold_mariano()` function is already implemented in this repo. Applying it systematically would reveal that many of the ensemble-vs-GARCH differences are not statistically significant at the 5% level — a finding with direct implications for model selection in production.
+Critically, Patton (2011) shows that QLIKE (unlike RMSE) produces *valid* DM tests even when the target `RV5` is a noisy proxy for the latent variance — the ranking is invariant to the proxy noise. This is now done (section 7c of the notebook, table above).
 
 ### 3 — Economic Value: Volatility-Targeting Backtest
 
