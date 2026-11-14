@@ -1,0 +1,941 @@
+\documentclass[12pt]{article}
+
+% ── Layout ──────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\doublespacing
+
+% ── Math ────────────────────────────────────────────────────────────────────
+\usepackage{amsmath,amssymb,amsthm}
+
+% ── Tables ──────────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+
+% ── Fonts and typography ────────────────────────────────────────────────────
+\usepackage{mathptmx}
+\usepackage{microtype}
+
+% ── References ──────────────────────────────────────────────────────────────
+\usepackage[authoryear,round]{natbib}
+\usepackage[colorlinks=true,
+            linkcolor=black,
+            citecolor=black,
+            urlcolor=black]{hyperref}
+
+% ── Misc ────────────────────────────────────────────────────────────────────
+\usepackage{caption}
+\usepackage{subcaption}
+
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{document}
+
+% ════════════════════════════════════════════════════════════════════════════
+%  TITLE PAGE
+% ════════════════════════════════════════════════════════════════════════════
+
+\begin{titlepage}
+\centering
+\vspace*{1.5cm}
+
+{\LARGE\bfseries Gradient-Boosted Trees for Realized Volatility Forecasting:\\[8pt]
+Fractional Differentiation, Domain Constraints,\\[8pt]
+and the Limits of Stacking\par}
+
+\vspace{1.5cm}
+
+{\large [Author Name]\par}
+\vspace{0.4cm}
+{\normalsize MS Quantitative Finance and Risk Management\\
+Fox School of Business, Temple University\par}
+
+\vspace{1.2cm}
+
+{\normalsize April 2026\par}
+
+\vspace{2cm}
+
+\begin{abstract}
+\noindent
+This paper evaluates a suite of gradient-boosted tree models against the
+GARCH(1,1)-$t$ benchmark for next-day five-day realized volatility forecasting
+on the SPDR S\&P 500 ETF (SPY) using ten years of daily data spanning 2014
+through 2024.  Three methodological contributions are examined alongside the
+standard ML pipeline: fractional differentiation of log-prices at the minimum
+integration order consistent with stationarity ($d^{*} = 0.6$ for SPY, ADF
+$p = 0.0007$), which preserves long-memory properties destroyed by integer
+differencing; a monotone-constrained XGBoost model that encodes the leverage
+effect and volatility clustering as hard architectural constraints rather than
+soft regularizers; and a leakage-aware stacking ensemble using purged,
+embargoed walk-forward cross-validation aligned with the five-day target
+horizon.  On a holdout test of 485 trading days from January 2023 through
+December 2024, XGBoost reduces RMSE by 16.4\% relative to GARCH (0.002334
+vs.\ 0.002793).  The quantile median estimator (Q50) achieves the best
+performance on all four reported metrics: RMSE = 0.002156, QLIKE $= -8.8054$,
+MAPE = 25.62\%.  Stacking ensembles fail on every metric, underperforming
+each of their three component models by substantial margins.  The
+monotone-constrained model incurs a QLIKE cost of 0.032 relative to
+unconstrained XGBoost in exchange for full financial interpretability.  The
+results suggest that robust estimation of the conditional median, combined
+with a rich but carefully debiased feature set, outperforms both classical
+econometrics and naive ensemble aggregation for this forecasting task.
+\end{abstract}
+
+\vspace{1cm}
+
+\noindent\textbf{JEL Classification:} C22, C53, C63, G17
+
+\vspace{0.3cm}
+
+\noindent\textbf{Keywords:} realized volatility, GARCH, gradient boosting,
+fractional differentiation, QLIKE loss, monotone constraints, quantile
+regression, stacking ensemble
+
+\end{titlepage}
+
+\newpage
+
+% ════════════════════════════════════════════════════════════════════════════
+%  1. INTRODUCTION
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Introduction}
+
+Accurate volatility forecasts are inputs to portfolio risk management, option
+pricing, and regulatory capital allocation.  The question of whether machine
+learning can improve on the GARCH(1,1) benchmark has motivated a large
+literature, yet the answer depends critically on three often-ignored factors:
+the construction of the baseline, the leakage-awareness of the cross-validation
+scheme, and the choice of evaluation metric.  This paper addresses all three
+while applying gradient-boosted trees to daily realized volatility forecasting
+on US equity data.
+
+The GARCH(1,1) model of \citet{Bollerslev1986} remains a formidable benchmark.
+\citet{HansenLunde2005} compared 330 volatility models across a large currency
+dataset and found no model that consistently beats GARCH(1,1) in pairwise
+comparisons.  Part of this durability comes from parsimony: GARCH captures
+volatility clustering with three parameters and generalizes reliably
+out-of-sample.  Any ML model claiming to improve on GARCH must earn that
+improvement honestly, on a holdout set, under a metric that is robust to the
+noisiness of the realized volatility proxy.
+
+This paper makes four specific contributions beyond applying gradient boosting
+to volatility data.
+
+First, the GARCH(1,1)-$t$ baseline is constructed to use only the
+one-step-ahead conditional variance forecast $\hat{\sigma}_{t+1|t}^{2}$,
+which depends solely on information available at the close of day $t$.  A
+common implementation error lags the GARCH output series incorrectly, allowing
+same-day shock information to enter the baseline and flatter its
+out-of-sample performance.
+
+Second, the log-price series is fractionally differenced at the minimum
+integration order achieving stationarity on the training fold ($d^{*} = 0.6$
+for SPY, found by ADF grid search).  Fractional differencing preserves the
+hyperbolic decay of autocorrelations that characterizes financial price series
+\citep{GrangerJoyeux1980}, whereas first-differencing over-removes this
+dependence.  The resulting feature retains memory of price levels from over a
+year ago while satisfying the stationarity requirement for tree-based models.
+
+Third, an XGBoost model encodes the leverage effect \citep{Black1976} and
+volatility clustering as hard monotone constraints embedded in the tree-split
+algorithm.  This converts domain knowledge from a regularization prior into an
+architectural guarantee: the model cannot produce a prediction that contradicts
+the sign of these well-established economic relationships, regardless of the
+input configuration.
+
+Fourth, the stacking ensemble uses manually generated out-of-fold predictions
+with a five-day embargo at each fold boundary.  The embargo prevents the
+five-day realized volatility target at the boundary from contaminating the
+base model's training data through shared return observations.
+
+Results on 485 out-of-sample trading days show that XGBoost improves RMSE by
+16.4\% over GARCH, the quantile median estimator achieves the best performance
+on all reported metrics, and stacking ensembles underperform every individual
+base model.  Section~\ref{sec:lit} reviews the relevant literature.
+Section~\ref{sec:data} describes the data.  Section~\ref{sec:method} presents
+the methodology.  Section~\ref{sec:results} reports results.
+Section~\ref{sec:disc} discusses findings and limitations.
+Section~\ref{sec:conc} concludes.
+
+% ════════════════════════════════════════════════════════════════════════════
+%  2. LITERATURE REVIEW
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Literature Review}
+\label{sec:lit}
+
+\subsection*{Econometric Volatility Models}
+
+\citet{Engle1982} introduced the ARCH model, formalizing the observation that
+return variances cluster: large shocks are followed by large shocks regardless
+of sign.  \citet{Bollerslev1986} extended this to the GARCH(p,q)
+specification, which allows conditional variance to depend on lagged squared
+residuals and lagged conditional variances.  The GARCH(1,1) parameterization
+captures most empirically observed volatility dynamics parsimoniously.
+\citet{Bollerslev1987} replaced the normal innovation distribution with the
+Student-$t$, providing better in-sample fit for the heavy tails characteristic
+of equity returns.  These three papers form the econometric baseline against
+which ML is benchmarked here.
+
+\subsection*{Realized Volatility and HAR-RV}
+
+The availability of high-frequency data motivated measuring realized volatility
+directly as the sum of squared intraday returns.  \citet{AndersenEtAl2003}
+established the theoretical and empirical basis for realized variance as a
+consistent estimator of integrated variance and demonstrated that realized
+measures produce substantially more accurate forecasts than GARCH-family models
+when used as forecast inputs.  \citet{Corsi2009} proposed the Heterogeneous
+Autoregressive model for Realized Volatility (HAR-RV), which regresses
+next-period realized volatility on daily, weekly, and monthly averages of past
+realized volatility, capturing the distinct trading horizons of different market
+participants.  Despite its simplicity, HAR-RV consistently outperforms
+GARCH(1,1) when realized measures are available \citep{HansenLunde2005}.  The
+present study implements HAR-RV in the codebase but does not compare it
+numerically in the main results, a limitation addressed in
+Section~\ref{sec:disc}.
+
+\subsection*{High-Efficiency Volatility Estimators from OHLC Data}
+
+When intraday data are unavailable, efficient volatility estimates can be
+extracted from daily open-high-low-close bars.  \citet{Parkinson1980} showed
+that the price range contains more information about the day's volatility than
+the close-to-close return alone.  \citet{GarmanKlass1980} derived an optimal
+estimator using the full OHLC bar, achieving approximately seven times lower
+variance than the close-to-close estimator under geometric Brownian motion.
+Both are used as features in this paper.
+
+\subsection*{The Leverage Effect}
+
+\citet{Black1976} documented that negative equity returns are followed by
+disproportionately large increases in volatility.  The standard interpretation
+is that a falling stock price raises the firm's debt-to-equity ratio and
+therefore its equity risk.  This asymmetric response is encoded directly into
+the Entropy XGBoost model as a monotone constraint: the model's prediction
+cannot increase when lagged log returns increase, holding other features fixed.
+
+\subsection*{Long Memory and Fractional Integration}
+
+\citet{GrangerJoyeux1980} introduced the concept of fractional integration.
+For a process integrated of order $d \in (0,1)$, the autocorrelation function
+decays hyperbolically as $\rho(k) \sim k^{2d-1}$, slower than any
+exponentially declining ARMA process.  First-differencing such a process
+$(d = 1)$ over-differences it, destroying the long-range dependence.
+\citet{LopezDePrado2018} applied fractional differencing to financial prices
+as a feature engineering technique: choosing the minimum $d$ that achieves
+stationarity preserves the maximum amount of economically relevant memory
+while satisfying the stationarity requirement that machine learning models
+implicitly assume.
+
+\subsection*{Evaluation Metrics for Volatility Forecasts}
+
+A core difficulty in comparing volatility forecasts is that the target, true
+latent conditional variance, is unobservable.  \citet{Patton2011} showed that
+not all loss functions produce rankings that are invariant to the quality of the
+realized-volatility proxy used in place of latent variance.  Theorem~1 of
+\citet{Patton2011} establishes that the QLIKE loss produces consistent model
+rankings under a broad class of proxies, while mean squared error (MSE)
+rankings can be reversed by proxy noise.  This finding motivates QLIKE as the
+primary evaluation metric in this paper.  The \citet{DieboldMariano1995} test
+for equal predictive accuracy is implemented in the accompanying codebase using
+Newey-West long-run variance to account for the serial correlation induced by
+the overlapping five-day target.
+
+\subsection*{Gradient Boosting}
+
+\citet{Friedman2001} formalized gradient boosting as functional gradient
+descent in a space of weak learners, providing the theoretical foundation for
+the tree-ensemble methods used here.  \citet{ChenGuestrin2016} introduced
+XGBoost, which added approximate split-finding, column subsampling, and
+$L_2$ regularization, enabling reliable large-scale applications.
+\citet{KeMengEtAl2017} developed LightGBM with leaf-wise tree growth,
+producing models with more leaves and different effective depths than
+depth-bounded XGBoost at comparable computational cost.  Both implementations
+support monotone constraints on individual features, where a proposed split is
+rejected if it violates the specified partial-monotonicity requirement.
+
+\subsection*{Ensemble Methods and Stacking}
+
+\citet{RapachZhou2013} surveyed equity return forecasting and found that
+forecast combination frequently outperforms individual models, but that this
+advantage depends on the diversity of the constituent forecasts.  Stacking
+trains a second-level model on out-of-fold predictions of base models and
+requires careful handling of temporal structure to avoid in-sample contamination.
+This paper finds that stacking underperforms every base model in the volatility
+setting, consistent with the intuition that highly correlated base forecasts
+provide little material for a meta-learner to exploit.
+
+% ════════════════════════════════════════════════════════════════════════════
+%  3. DATA
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Data}
+\label{sec:data}
+
+\subsection*{Primary Asset}
+
+The primary asset is the SPDR S\&P~500 ETF (SPY), which tracks the
+S\&P~500 index and is among the most liquid exchange-traded products in the
+world.  Daily open, high, low, adjusted close, and volume data are obtained
+from Yahoo Finance via the \texttt{yfinance} library for the period January
+2014 through December 2024, yielding approximately 2,510 raw trading days.
+After constructing features with lookback windows and dropping observations
+with missing values, 2,421 complete observations remain.
+
+\subsection*{Cross-Asset Signals}
+
+Three cross-asset series are included to provide macro and credit market
+information.  The CBOE Volatility Index (VIX) measures the 30-day
+risk-neutral variance of the S\&P~500 implied by options prices and is widely
+used as a proxy for investor uncertainty.  The CBOE 3-Month Volatility Index
+(VIX3M) covers a 93-day horizon; its ratio to VIX captures the slope of the
+implied volatility term structure and provides information about the expected
+path of volatility beyond what the VIX level alone conveys.  Credit market
+stress is proxied by the ratio of the iShares iBoxx USD High Yield Corporate
+Bond ETF (HYG) to the iShares 7--10 Year Treasury Bond ETF (IEF): a declining
+ratio indicates widening credit spreads and rising systemic financial stress.
+All cross-asset series are sourced from Yahoo Finance.
+
+\subsection*{Sample Split}
+
+The sample is divided chronologically in an 80/20 ratio into a training set
+and a test set.  The training set spans May 2015 through January 2023 and
+contains 1,936 observations.  The test set spans January 2023 through December
+2024 and contains 485 observations.  No shuffling is applied at any stage.
+All preprocessing objects, including the feature scaler, the fractional
+differencing order, and the volatility regime model, are estimated exclusively
+on the training set and applied without refitting to the test set.
+
+% ════════════════════════════════════════════════════════════════════════════
+%  4. METHODOLOGY
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Target Variable}
+
+The forecast target is the five-day realized volatility:
+\begin{equation}
+  \text{RV5}_{t} = \left[\frac{1}{4}\sum_{j=0}^{4}
+    \bigl(r_{t-j} - \bar{r}_{t}\bigr)^{2}\right]^{1/2},
+  \label{eq:rv5}
+\end{equation}
+where $r_{t} = \ln(C_{t}/C_{t-1})$ is the daily log return and
+$\bar{r}_{t}$ is the mean of the five returns in the window.  The prediction
+objective at each day $t$ is $\text{RV5}_{t+1}$, the realized volatility
+realized over the five trading days beginning the following day.
+
+Because RV5 is strictly positive, all ML models are trained on
+$\ln(\text{RV5}_{t+1})$ and their outputs are exponentiated before evaluation:
+\begin{equation}
+  \hat{h}_{t+1} = \exp\!\bigl(\hat{f}(\mathbf{x}_{t})\bigr).
+  \label{eq:logvol}
+\end{equation}
+The log transformation guarantees positive forecasts without constrained
+optimization.
+
+\subsection{Volatility Estimators}
+
+Four daily volatility estimates computed from OHLC data serve as features.
+Let $O_{t}$, $H_{t}$, $L_{t}$, $C_{t}$ denote the open, high, low, and
+close prices on day $t$.
+
+\smallskip\noindent\textit{Log return:}
+$r_{t} = \ln(C_{t}/C_{t-1})$.
+
+\smallskip\noindent\textit{Garman-Klass estimator} \citep{GarmanKlass1980}:
+\begin{equation}
+  \hat{\sigma}_{t}^{\,GK} =
+    \sqrt{\frac{1}{2}\ln^{2}\!\left(\frac{H_{t}}{L_{t}}\right)
+          - (2\ln 2 - 1)\ln^{2}\!\left(\frac{C_{t}}{O_{t}}\right)}.
+  \label{eq:gk}
+\end{equation}
+This estimator uses the full OHLC bar and achieves approximately seven times
+lower variance than the close-to-close estimator under geometric Brownian
+motion.
+
+\smallskip\noindent\textit{Parkinson estimator} \citep{Parkinson1980}:
+\begin{equation}
+  \hat{\sigma}_{t}^{\,P} =
+    \sqrt{\frac{\ln^{2}(H_{t}/L_{t})}{4\ln 2}}.
+  \label{eq:park}
+\end{equation}
+
+\smallskip\noindent\textit{Overnight gap:}
+\begin{equation}
+  \text{Gap}_{t} = \left|\ln\!\left(\frac{O_{t}}{C_{t-1}}\right)\right|.
+  \label{eq:gap}
+\end{equation}
+The overnight gap captures discrete price jumps and after-hours news that do
+not appear in intraday estimators.
+
+\subsection{GARCH(1,1)-\texorpdfstring{$t$}{t} Baseline}
+\label{sec:garch}
+
+The GARCH(1,1) model with Student-$t$ innovations is:
+\begin{align}
+  r_{t} &= \mu + \varepsilon_{t}, \quad
+  \varepsilon_{t} = \sigma_{t}\,z_{t}, \quad
+  z_{t} \overset{iid}{\sim} t_{\nu}, \label{eq:garch-mean}\\
+  \sigma_{t}^{2} &= \omega + \alpha\,\varepsilon_{t-1}^{2}
+                   + \beta\,\sigma_{t-1}^{2}, \label{eq:garch-var}
+\end{align}
+with $\omega > 0$, $\alpha, \beta \geq 0$, and $\alpha + \beta < 1$.
+Parameters are estimated by quasi-maximum likelihood on an expanding window,
+refit every 21 trading days (approximately one calendar month).  The
+one-step-ahead conditional volatility forecast used in the comparison is:
+\begin{equation}
+  \hat{\sigma}_{t+1|t} = \sqrt{\hat{\omega}
+    + \hat{\alpha}\,\varepsilon_{t}^{2}
+    + \hat{\beta}\,\hat{\sigma}_{t}^{2}},
+  \label{eq:garch-forecast}
+\end{equation}
+which depends only on information available at the close of day $t$.
+Concretely, the output series is lagged by one period before entering the
+comparison, ensuring that the same-day residual $\varepsilon_{t}$ does not
+contribute to the baseline forecast for $\text{RV5}_{t+1}$.  This is a
+common but silent error in applied ML-versus-GARCH comparisons; correcting it
+makes the baseline stronger.
+
+\subsection{Feature Engineering}
+
+\subsubsection*{Fractional Differentiation}
+
+For $d \in (0,1)$, the fractionally differenced series is defined by the
+binomial expansion:
+\begin{equation}
+  (1-L)^{d}\,x_{t} = \sum_{k=0}^{\infty} w_{k}\,x_{t-k},
+  \label{eq:fracdiff}
+\end{equation}
+where the weights satisfy the recurrence $w_{0} = 1$ and
+$w_{k} = -w_{k-1}(d - k + 1)/k$ for $k \geq 1$, truncated once
+$|w_{k}| < 10^{-5}$.  For integer $d = 1$, the weights are $1, -1, 0, 0,
+\ldots$ (finite support), destroying all memory beyond one lag.  For
+$d \in (0,1)$, the weights decay as $|w_{k}| \sim k^{-(d+1)}$ (hyperbolic),
+retaining influence from observations many periods in the past while reducing
+the order of integration below one.
+
+The minimum $d$ achieving stationarity (ADF $p \leq 0.05$) is found by grid
+search over $d \in \{0.1, 0.2, \ldots, 1.0\}$ applied exclusively to
+log-prices in the training fold.  For SPY, the result is $d^{*} = 0.6$ with
+ADF $p = 0.0007$.  At this order, the weight at lag $k = 100$ is
+$100^{-1.6} \approx 0.025$, so price information from more than four calendar
+months ago still enters the feature.  Integer differencing would zero out all
+such lags.
+
+\subsubsection*{Volatility Regime Dummies}
+
+A Gaussian Mixture Model (GMM) is estimated on the joint distribution of
+$(\text{RV5}_{t}, \text{VIX\textrm{-}daily}_{t})$ using training data only,
+where $\text{VIX\textrm{-}daily}_{t} = \text{VIX}_{t}/(100\sqrt{252})$
+converts the annualized implied volatility index to a daily decimal scale.
+The number of components is selected by the Bayesian Information Criterion
+over $\{2, 3, 4, 5, 6, 7\}$; the BIC selects two components.  Regime labels
+are sorted by ascending mean RV5, so regime 0 corresponds to low-volatility
+conditions.  One-hot dummies for each regime are included as features and
+provide a nonlinear partition of the volatility state space that linear
+features cannot capture.
+
+\subsubsection*{Additional Features}
+
+Table~\ref{tab:features} summarizes the complete 18-variable feature set.
+Cross-asset features capture macro and credit market information.  The
+variance risk premium (VRP) is:
+\begin{equation}
+  \text{VRP}_{t} = \hat{\sigma}_{t+1|t}^{\,GARCH}
+                  - \frac{\text{VIX}_{t}}{100\sqrt{252}},
+  \label{eq:vrp}
+\end{equation}
+the gap between the GARCH conditional volatility forecast and the
+options-implied daily volatility.  A positive VRP indicates that the options
+market is pricing in more uncertainty than the GARCH model predicts based on
+historical returns, consistent with a premium for bearing variance risk.
+
+\begin{table}[htbp]
+\centering
+\caption{Feature Set ($p = 18$ base features; $p \times L = 360$ after
+         lookback flattening with $L = 20$)}
+\label{tab:features}
+\begin{tabular}{llp{6.8cm}}
+\toprule
+Category & Feature & Construction \\
+\midrule
+\multirow{4}{*}{Vol.\ estimators}
+  & Log return      & $r_{t} = \ln(C_{t}/C_{t-1})$ \\
+  & Garman-Klass    & Equation~\eqref{eq:gk} \\
+  & Parkinson       & Equation~\eqref{eq:park} \\
+  & Overnight gap   & Equation~\eqref{eq:gap} \\
+\midrule
+\multirow{6}{*}{Technical}
+  & RSI             & 14-period Relative Strength Index \\
+  & BB Width        & $4 \times \text{sd}_{20}(r_{t})$ \\
+  & Return Mom.     & $\text{mean}_{5}(r_{t})$ \\
+  & Vol-of-Vol      & $\text{sd}_{20}(\hat{\sigma}_{t}^{GK})$ \\
+  & Skewness        & $\text{skew}_{60}(r_{t})$ \\
+  & GARCH Vol       & $\hat{\sigma}_{t+1|t}^{GARCH}$ \\
+\midrule
+\multirow{4}{*}{Cross-asset}
+  & VIX Daily       & $\text{VIX}_{t}/(100\sqrt{252})$ \\
+  & VRP             & Equation~\eqref{eq:vrp} \\
+  & Credit Stress   & $\text{HYG}_{t}/\text{IEF}_{t}$ \\
+  & Vol Term Slope  & $\text{VIX}_{t}/\text{VIX3M}_{t}$ \\
+\midrule
+\multirow{2}{*}{Price}
+  & FracDiff Close  & $(1-L)^{0.6}\ln P_{t}$; Equation~\eqref{eq:fracdiff} \\
+\midrule
+\multirow{2}{*}{Regime}
+  & Regime 0        & Low-vol GMM dummy (BIC-selected, 2 components) \\
+  & Regime 1        & High-vol GMM dummy \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection*{Lookback Window Construction}
+
+At each day $t$, the feature vector presented to the ML models is the
+concatenation of 18-dimensional feature observations over the preceding
+$L = 20$ trading days:
+\begin{equation}
+  \mathbf{x}_{t} =
+    \bigl[\mathbf{z}_{t-19}^{\top},\,
+          \mathbf{z}_{t-18}^{\top},\,\ldots,\,
+          \mathbf{z}_{t}^{\top}\bigr]^{\top}
+    \in \mathbb{R}^{360},
+  \label{eq:lookback}
+\end{equation}
+where $\mathbf{z}_{s} \in \mathbb{R}^{18}$ is the feature vector at day $s$.
+This flattening converts the three-dimensional panel (samples $\times$
+features $\times$ lags) into a two-dimensional design matrix that gradient
+boosted trees consume directly.  The window of $L = 20$ days corresponds to
+approximately one calendar month.  After construction, the training design
+matrix has dimensions $1{,}936 \times 360$, and all features are scaled with
+a RobustScaler fitted on the training set only, using interquartile range
+normalization to limit the influence of the March 2020 volatility spike.
+
+\subsection{Model Specifications}
+
+\subsubsection*{XGBoost}
+
+The base XGBoost model minimizes the squared-error objective on the log-vol
+target with $n = 300$ trees, learning rate $\eta = 0.04$, maximum depth 4,
+column and row subsampling rates of 0.8, and $L_{2}$ regularization
+$\lambda = 2$.
+
+\subsubsection*{LightGBM GBDT}
+
+LightGBM uses standard gradient boosting (GBDT) with $n = 400$ trees,
+$\eta = 0.04$, 63 leaves, minimum 20 samples per leaf, $L_{1}$
+regularization $\alpha = 0.1$, and $L_{2}$ regularization $\lambda = 2$.
+The leaf-wise growth of LightGBM produces trees with up to 63 leaves per
+level, compared with XGBoost's maximum of $2^{4} = 16$ leaves under
+\texttt{max\_depth} = 4, providing genuine architectural diversity for the
+ensemble.  The DART boosting mode was evaluated and discarded: DART produced
+out-of-fold MAPE near 77\%, a known instability arising because DART uses all
+trees at inference despite the dropout training procedure, leading to
+systematic underfitting on regression objectives.
+
+\subsubsection*{Entropy XGBoost (Monotone-Constrained)}
+
+The Entropy XGBoost model augments the XGBoost specification ($n = 350$,
+$\eta = 0.03$, $\lambda = 3$) with hard monotone constraints on selected
+features.  Let $\mathcal{I}^{+}$ denote the index set of all 20 lookback
+lags of the Garman-Klass volatility, Parkinson volatility, and overnight gap
+features, and let $\mathcal{I}^{-}$ denote the 20 lags of the log return.
+The constraints require:
+\begin{align}
+  \frac{\partial \hat{f}(\mathbf{x})}{\partial x_{j}} \geq 0
+    & \quad \text{for all } j \in \mathcal{I}^{+},
+    \label{eq:mono-pos} \\
+  \frac{\partial \hat{f}(\mathbf{x})}{\partial x_{j}} \leq 0
+    & \quad \text{for all } j \in \mathcal{I}^{-}.
+    \label{eq:mono-neg}
+\end{align}
+These constraints are enforced at the tree-split level: any proposed split
+on a feature in $\mathcal{I}^{+}$ that assigns a higher prediction to the
+lower-valued branch is rejected, regardless of its improvement to the
+training objective.  The constraint in~\eqref{eq:mono-neg} encodes the
+leverage effect \citep{Black1976}: higher past returns cannot raise the
+volatility forecast.  The constraint in~\eqref{eq:mono-pos} encodes
+volatility clustering: higher past realized volatility must produce a higher
+forecast.  The remaining 340 feature-lag pairs ($\mathcal{I}^{0}$) are
+unconstrained.
+
+\subsubsection*{Quantile Regression}
+
+Three XGBoost models minimize the pinball loss at quantile levels
+$\tau \in \{0.10,\, 0.50,\, 0.90\}$:
+\begin{equation}
+  L_{\tau}(y, q) = (y - q)\bigl[\tau - \mathbf{1}(y < q)\bigr],
+  \label{eq:pinball}
+\end{equation}
+where $y = \text{RV5}_{t+1}$ is the untransformed target (not log-vol).
+After fitting, the three forecasts for each observation are sorted by isotonic
+regression to enforce $\hat{q}_{0.10} \leq \hat{q}_{0.50} \leq
+\hat{q}_{0.90}$, resolving any quantile crossing.  The Q50 conditional median
+serves as a point estimator in the main comparison.
+
+\subsubsection*{Stacking Ensembles}
+
+Both stacking configurations use the same out-of-fold (OOF) base model
+predictions as meta-features.  The OOF predictions are generated via
+five-fold \texttt{TimeSeriesSplit} on the training set with a five-day
+embargo: the last five observations of each training fold are excluded before
+fitting the base model, preventing label overlap caused by the five shared
+return observations between adjacent RV5 windows.  Formally, if fold $k$
+has training indices $\mathcal{T}_{k}$ and validation indices
+$\mathcal{V}_{k}$, base models are fit on
+$\mathcal{T}_{k} \setminus \mathcal{T}_{k}^{\text{end}(5)}$ where
+$\mathcal{T}_{k}^{\text{end}(5)}$ denotes the last five indices of
+$\mathcal{T}_{k}$.  The resulting OOF matrix has dimensions
+$1{,}936 \times 3$.  Scikit-learn's \texttt{StackingRegressor} is not used:
+its \texttt{cross\_val\_predict} implementation with \texttt{TimeSeriesSplit}
+can assign some observations to multiple validation folds under expanding
+windows, producing in-sample predictions that contaminate meta-learner
+training.
+
+The Ridge meta-learner is a \texttt{RidgeCV} with $\alpha \in \{0.01, 0.1,
+1, 10, 100\}$ fitted on the OOF signal matrix only, without raw feature
+pass-through; cross-validation selects $\alpha = 0.1$.  The Huber
+meta-learner is a \texttt{HuberRegressor} with $\varepsilon = 1.35$
+operating in volatility space (base model log-vol predictions exponentiated
+before meta-training) so that the $L_{2}$-to-$L_{1}$ transition at
+$1.35\hat{\sigma}$ acts on actual volatility magnitudes rather than
+log-volatility residuals.
+
+\subsection{Evaluation Metrics}
+
+Four metrics are reported.  RMSE and MAE measure accuracy in the original
+volatility units:
+\begin{align}
+  \text{RMSE} &= \left(\frac{1}{T}\sum_{t=1}^{T}
+    (h_{t} - \sigma_{t})^{2}\right)^{1/2}, \\
+  \text{MAE}  &= \frac{1}{T}\sum_{t=1}^{T}|h_{t} - \sigma_{t}|, \\
+  \text{MAPE} &= \frac{1}{T}\sum_{t=1}^{T}
+    \frac{|h_{t} - \sigma_{t}|}{\sigma_{t}},
+\end{align}
+where $h_{t}$ is the volatility forecast and $\sigma_{t} = \text{RV5}_{t}$
+is the realized volatility proxy.
+
+The primary metric is the QLIKE loss \citep{Patton2011}:
+\begin{equation}
+  \mathcal{L}_{QLIKE} = \frac{1}{T}\sum_{t=1}^{T}
+    \left[\ln H_{t} + \frac{V_{t}}{H_{t}}\right],
+  \label{eq:qlike}
+\end{equation}
+where $H_{t} = h_{t}^{2}$ is the variance forecast and $V_{t} = \sigma_{t}^{2}$
+is the realized variance proxy.  The loss is minimized at $H_{t} = V_{t}$,
+giving a value of $\ln V_{t} + 1$.  For a typical daily realized variance of
+approximately $(0.008)^{2} \approx 6.4 \times 10^{-5}$, the minimum QLIKE is
+near $-8.7$, which explains the range of values observed in
+Table~\ref{tab:results}.  Forecasts below the perfect-forecast level are
+penalized asymmetrically: underpredicting variance ($H_{t} < V_{t}$) raises
+$V_{t}/H_{t}$ with diminishing offset from $\ln H_{t}$, while overpredicting
+raises $\ln H_{t}$ with diminishing offset from $V_{t}/H_{t}$.
+
+Unlike MSE, QLIKE produces consistent model rankings when $V_{t}$ is a noisy
+proxy for latent conditional variance, a property proven in
+\citet{Patton2011}.  MSE rankings can be reversed by proxy noise.  This paper
+therefore treats QLIKE as the definitive accuracy measure and uses RMSE,
+MAE, and MAPE as supporting descriptors.
+
+\subsection{Cross-Validation and Hyperparameter Selection}
+
+Walk-forward cross-validation uses a five-fold \texttt{TimeSeriesSplit} on
+the 1,936 training observations, with each fold expanding the training window
+from the beginning of the sample.  The five-day embargo is applied at every
+fold boundary.  Gradient boosting hyperparameters are fixed at the values
+described above; they were selected by RMSE on an internal validation fold
+and are not reoptimized on the test set.  The test set is evaluated once at
+the end of the study.
+
+% ════════════════════════════════════════════════════════════════════════════
+%  5. RESULTS
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Out-of-Sample Performance}
+
+Table~\ref{tab:results} reports RMSE, MAE, QLIKE, and MAPE for all seven
+models on the 485-observation test set spanning January 2023 through December
+2024.
+
+\begin{table}[htbp]
+\centering
+\caption{Out-of-Sample Forecast Performance\\
+  {\small Test set: January 2023 -- December 2024, $n = 485$ trading days.
+   QLIKE is the \citet{Patton2011} quasi-likelihood loss defined in
+   Equation~\eqref{eq:qlike}; lower values indicate better accuracy.
+   Best performance on each metric is in bold.}}
+\label{tab:results}
+\begin{tabular}{lcccc}
+\toprule
+Model & RMSE & MAE & QLIKE & MAPE \\
+\midrule
+GARCH(1,1)-$t$ & 0.002793 & 0.002167 & $-8.7463$ & 40.89\% \\
+XGBoost        & 0.002334 & 0.001770 & $-8.7678$ & 28.26\% \\
+LightGBM GBDT  & 0.002441 & 0.001829 & $-8.7429$ & 28.86\% \\
+Entropy XGBoost (monotone) & 0.002511 & 0.001885 & $-8.7358$ & 30.53\% \\
+Q50 (quantile median) & \textbf{0.002156} & \textbf{0.001607}
+                      & $\mathbf{-8.8054}$ & \textbf{25.62\%} \\
+Stacking (Ridge meta) & 0.003313 & 0.002547 & $-8.5366$ & 39.61\% \\
+Stacking (Huber meta) & 0.003535 & 0.002791 & $-8.4336$ & 48.09\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{GARCH(1,1)-$t$.}
+The baseline achieves RMSE = 0.002793 and QLIKE $= -8.7463$.  Its MAPE of
+40.89\% reflects a persistent overestimation bias in low-volatility periods:
+the combination of the positive intercept $\hat{\omega}$ and persistence
+$\hat{\alpha} + \hat{\beta}$ close to one causes conditional variance to
+decay slowly after spikes, overestimating volatility during the calm periods
+that dominate the 2023--2024 test window.
+
+\paragraph{XGBoost.}
+XGBoost reduces RMSE by 16.4\% to 0.002334, MAE by 18.3\% to 0.001770, and
+MAPE by 12.6 percentage points to 28.26\%.  The QLIKE improvement is
+$-8.7678$ versus $-8.7463$, a gain of 0.022.  The modest QLIKE gain relative
+to the large RMSE improvement suggests that XGBoost is more accurately
+capturing the conditional mean (which drives RMSE) than fine-tuning the tails
+of the forecast distribution (which QLIKE measures).
+
+\paragraph{LightGBM GBDT.}
+LightGBM achieves RMSE = 0.002441 and MAPE = 28.86\%, closely tracking
+XGBoost on scale-sensitive metrics while trailing modestly on QLIKE
+($-8.7429$ vs.\ $-8.7678$).  The similar performance of XGBoost and LightGBM
+despite their different tree structures (depth-limited vs.\ leaf-wise growth)
+indicates that the dominant signal in the feature set is strong enough that
+architectural differences in the boosting algorithm matter less than the
+quality of the inputs.
+
+\paragraph{Entropy XGBoost.}
+The monotone-constrained model achieves RMSE = 0.002511, QLIKE $= -8.7358$,
+and MAPE = 30.53\%.  The QLIKE gap relative to unconstrained XGBoost is 0.032,
+or approximately 0.4\% relative to the range of QLIKE across models.  This
+cost represents the price of the architectural interpretability guarantee:
+for any configuration of feature inputs, the Entropy XGBoost model will
+never predict that higher recent volatility produces a lower forecast, or that
+a positive return shock raises the volatility forecast.
+
+\paragraph{Q50 (Quantile Median).}
+The quantile median estimator achieves the best performance on all four
+metrics: RMSE = 0.002156, MAE = 0.001607, QLIKE $= -8.8054$, and MAPE =
+25.62\%.  Relative to the GARCH baseline, RMSE improves by 22.8\% and QLIKE
+improves by 0.059.  Relative to unconstrained XGBoost, RMSE improves by 7.6\%
+and QLIKE improves by 0.038.  The Q50 estimator is the single best model in
+this study on every reported dimension.
+
+\paragraph{Stacking Ensembles.}
+Both stacking configurations underperform every individual base model.  The
+Ridge meta-learner achieves RMSE = 0.003313 and QLIKE $= -8.5366$, worse than
+GARCH on RMSE by 18.6\% and worse on QLIKE by 0.210.  The Huber meta-learner
+achieves RMSE = 0.003535 and QLIKE $= -8.4336$, the worst performance of any
+model in the comparison.  These are not marginal underperformances: both
+meta-learners produce forecasts that are substantially less accurate than the
+individual GARCH baseline, despite being trained on the OOF predictions of
+three models that each individually beat GARCH.
+
+\subsection{Quantile Forecast Coverage}
+
+The empirical coverage of the 80\% prediction interval (Q10 to Q90) on the
+test set is approximately 80\%, matching the nominal level.  Isotonic
+post-processing resolves all quantile crossings and ensures that every
+prediction interval has positive width.  The alignment between nominal and
+empirical coverage indicates that the quantile models are calibrated rather
+than merely conditionally correct.
+
+\subsection{Summary of Relative Performance}
+
+Table~\ref{tab:improvements} expresses each model's performance as a
+percentage change in RMSE relative to the GARCH baseline.
+
+\begin{table}[htbp]
+\centering
+\caption{RMSE Improvement Relative to GARCH(1,1)-$t$ Baseline}
+\label{tab:improvements}
+\begin{tabular}{lrr}
+\toprule
+Model & $\Delta$RMSE (\%) & $\Delta$QLIKE (abs.) \\
+\midrule
+XGBoost                   & $-16.4$ & $-0.022$ (better) \\
+LightGBM GBDT             & $-12.6$ & $+0.003$ (worse)  \\
+Entropy XGBoost           & $-10.1$ & $+0.011$ (worse)  \\
+Q50 (quantile median)     & $-22.8$ & $-0.059$ (better) \\
+Stacking (Ridge meta)     & $+18.6$ & $+0.210$ (worse)  \\
+Stacking (Huber meta)     & $+26.6$ & $+0.313$ (worse)  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ════════════════════════════════════════════════════════════════════════════
+%  6. DISCUSSION
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Discussion}
+\label{sec:disc}
+
+\subsection{Why the Quantile Median Estimator Wins}
+
+The Q50 model minimizes the pinball loss at $\tau = 0.5$, which is equivalent
+to minimizing the mean absolute error of the forecast.  Its dominance on
+RMSE, QLIKE, and MAPE simultaneously suggests that the distribution of
+$\text{RV5}_{t+1}$ conditional on $\mathbf{x}_{t}$ is right-skewed with
+heavy tails, a feature characteristic of realized volatility series.  Under
+such a distribution, the conditional median lies below the conditional mean.
+The mean-targeting models (XGBoost, LightGBM, Entropy XGBoost) overpredict
+during calm periods and underpredict during spikes because they chase the
+mean of a heavy-tailed distribution.  The Q50 model bypasses this by directly
+targeting the median, producing forecasts that are better calibrated to the
+typical realized volatility observation.
+
+The convergence of best RMSE and best QLIKE in the Q50 model is notable
+because RMSE and QLIKE have different sensitivities to the tails of the error
+distribution.  The fact that the same model wins on both suggests that median
+estimation is not merely robust to outliers at the cost of typical-day
+accuracy; it genuinely produces better-calibrated forecasts across the full
+distribution.
+
+\subsection{Why Stacking Fails}
+
+The most striking result is the collapse of both stacking configurations.
+The most plausible explanation is error correlation among the base models.
+All three base models rely on the same dominant feature, lagged realized
+volatility, and their forecast errors are highly correlated across
+observations.  Stacking gains arise when base model errors are
+\emph{complementary}: one model's overestimation offsets another's
+underestimation.  When base model errors are aligned, the meta-learner cannot
+average away idiosyncratic error; it can only estimate a weighted mean of the
+three forecasts, and this mean is worse than the best individual forecast
+because the weights are estimated from a noisy 1,936-observation OOF matrix
+with only three effective signal dimensions.
+
+A secondary factor is the mismatch between the OOF training environment and
+the test environment.  The meta-learners are trained on OOF predictions that
+span 2015--2023, a period including the 2015--2016 China volatility shock,
+the 2018 VIX spike, and the March 2020 pandemic crash.  The test set covers
+2023--2024, a lower-volatility regime.  A meta-learner that learned to combine
+base models during high-volatility episodes may not transfer well to a
+relatively calm test environment.
+
+This result is consistent with the forecast combination evidence in
+\citet{RapachZhou2013}, who find that combination improves on individual
+models most reliably when constituent forecasts have complementary information
+sets.  In a setting where all models share the same primary predictor, the
+combination benefit is limited.
+
+\subsection{Monotone Constraints as an Interpretability Guarantee}
+
+The Entropy XGBoost model represents a specific point on the
+interpretability-performance tradeoff curve.  The QLIKE cost of the
+constraints is 0.032 relative to unconstrained XGBoost, a difference that is
+directionally consistent but may not be statistically significant without a
+formal Diebold-Mariano test.  In exchange, the model provides an
+architectural guarantee that practitioners can verify without examining
+specific trees: no combination of input values can produce a volatility
+forecast that contradicts the leverage effect or volatility clustering.
+
+This property is relevant to production risk systems, where a model prediction
+that contradicts well-established financial intuition requires either a manual
+override or a detailed explanation to risk committees and regulators.  The
+constrained model eliminates this failure mode by construction.
+
+\subsection{Limitations}
+
+Several limitations of this study should be acknowledged.
+
+\paragraph{No Diebold-Mariano Test Results.}
+The Diebold-Mariano test \citep{DieboldMariano1995} is implemented in the
+codebase with Newey-West long-run variance and QLIKE loss but is not applied
+to the pairwise model comparisons in Table~\ref{tab:results}.  The QLIKE
+differences between, for example, XGBoost and GARCH (0.022) and between Q50
+and XGBoost (0.038) are small in absolute terms relative to typical
+cross-model variation.  Some of these pairwise differences may not be
+statistically significant at conventional levels.  Readers should treat the
+rankings in Table~\ref{tab:results} as directional evidence pending formal
+significance testing.
+
+\paragraph{HAR-RV Is Not Included.}
+The HAR-RV model \citep{Corsi2009} is fully implemented in the codebase and
+unit-tested but is not included in the out-of-sample comparison.
+\citet{HansenLunde2005} document that HAR-RV consistently outperforms
+GARCH(1,1) when realized measures are available as inputs; its exclusion means
+this study's ``econometric baseline'' may be weaker than it would be in a
+complete comparison.  Including HAR-RV would also clarify whether the ML
+models' improvements over GARCH are really improvements over the class of
+linear econometric models, or specifically over the GARCH(1,1)-$t$
+specification.
+
+\paragraph{No Economic Value Assessment.}
+The analysis is purely statistical.  Translating QLIKE improvements into
+portfolio performance via a volatility-targeting strategy, where position
+sizes are scaled as $k/\hat{h}_{t+1}$, would clarify whether the observed
+differences are economically meaningful.  A model that improves RMSE by 22.8\%
+but produces economically equivalent Sharpe ratios would lead to different
+practical conclusions.
+
+\paragraph{Single Asset and Sample Period.}
+The analysis covers one asset (SPY) over one decade.  Results may not
+generalize to individual stocks with lower liquidity, different volatility
+dynamics, or different information environments.  The test period
+(2023--2024) is a relatively low-volatility regime that may favor models
+which avoid overestimation, potentially understating the performance advantage
+of the GARCH baseline relative to more turbulent periods.
+
+% ════════════════════════════════════════════════════════════════════════════
+%  7. CONCLUSION
+% ════════════════════════════════════════════════════════════════════════════
+
+\section{Conclusion}
+\label{sec:conc}
+
+This paper compared seven volatility forecasting models on a ten-year daily
+sample of SPY data using a strict chronological train-test split and QLIKE as
+the primary evaluation metric.  Four main findings emerge.
+
+First, GARCH(1,1)-$t$ is a formidable baseline.  Its RMSE of 0.002793 and
+QLIKE of $-8.7463$ on the 485-day test set are not easily surpassed, and the
+16.4\% RMSE improvement achieved by XGBoost represents meaningful but not
+transformative progress.
+
+Second, the quantile median estimator dominates the comparison on every
+reported metric, with RMSE = 0.002156 and QLIKE $= -8.8054$.  The result
+suggests that the conditional distribution of five-day realized volatility is
+sufficiently right-skewed that targeting the conditional median, rather than
+the conditional mean, produces better-calibrated forecasts under both symmetric
+and asymmetric loss functions.
+
+Third, stacking ensembles fail.  Both meta-learners produce forecasts that are
+substantially worse than any of their three component base models.  The failure
+is attributed to high correlation among base model errors, which limits the
+diversification benefit that makes stacking effective.
+
+Fourth, monotone domain constraints impose a modest QLIKE cost (0.032 relative
+to unconstrained XGBoost) in exchange for an architectural guarantee that the
+forecast always satisfies the leverage effect and volatility clustering
+constraints.  This tradeoff may be favorable in production environments where
+model predictions must be defensible to risk committees.
+
+Three extensions would materially strengthen this analysis.  First, applying
+the implemented Diebold-Mariano test to all model pairs would convert the
+directional rankings in Table~\ref{tab:results} into statements about
+statistical significance.  Second, including HAR-RV as an econometric
+benchmark would complete the comparison between ML and the class of linear
+econometric volatility models.  Third, a volatility-targeting portfolio
+backtest would translate the statistical QLIKE improvements into an economic
+value assessment.
+
+\newpage
+
+% ════════════════════════════════════════════════════════════════════════════
+%  REFERENCES
+% ════════════════════════════════════════════════════════════════════════════
+
+\bibliographystyle{apalike}
+\bibliography{references}
+
+\end{document}

@@ -211,3 +211,35 @@ def get_monotone_constraints(
     """
     per_step = [constraint_map.get(col, 0) for col in feature_cols]
     return tuple(per_step * lookback)
+
+
+def naive_forecasts(
+    rv: pd.Series,
+    dates: pd.DatetimeIndex,
+    info_lag: int = 1,
+    mean_window: int = 22,
+    har: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Simple benchmarks for the next-day RV target, using the same
+    information set as the ML features.
+
+    In this pipeline a sample dated ``d`` sees features through ``d - 1``
+    and predicts ``RV5`` at ``d + 1`` (see ``build_lookback_windows``), so
+    every benchmark here is built from ``rv`` up to ``d - info_lag`` only:
+
+      - ``Random walk``: the latest available RV5.
+      - ``22d mean``:    the mean of the last ``mean_window`` RV5 values.
+      - ``HAR-RV``:      the expanding-window HAR one-step forecast made at
+                         ``d - info_lag`` (pass ``har = har_rv(rv)``).
+
+    A model that cannot beat the random walk on RV5, whose 5-day windows
+    overlap by four days, has not shown forecasting skill.
+    """
+    out = pd.DataFrame(index=dates)
+    out["Random walk"] = rv.shift(info_lag).reindex(dates)
+    out["22d mean"] = rv.rolling(mean_window).mean().shift(info_lag).reindex(dates)
+    if har is not None:
+        # har[t] is the forecast of rv[t] made with data through t - 1.
+        out["HAR-RV"] = har.shift(info_lag - 1).reindex(dates)
+    return out

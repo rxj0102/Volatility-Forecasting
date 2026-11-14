@@ -127,7 +127,14 @@ def diebold_mariano(
         gamma_k = np.mean((d[lag:] - d_bar) * (d[:-lag] - d_bar))
         nw_var += 2 * (1 - lag / (bw + 1)) * gamma_k
 
-    se = np.sqrt(max(nw_var, eps) / n)
+    # Fall back to the plain variance if the Bartlett-weighted sum is not
+    # positive. (A fixed floor such as 1e-8 is wrong here: MSE differentials on
+    # daily vol are ~1e-5, so their variance is far below 1e-8.)
+    if not nw_var > 0:
+        nw_var = gamma_0
+    if not nw_var > 0:  # identical losses: no evidence either way
+        return 0.0, 1.0
+    se = np.sqrt(nw_var / n)
     dm_stat = d_bar / se
     p_value = 2 * (1 - stats.norm.cdf(abs(dm_stat)))
     return float(dm_stat), float(p_value)
