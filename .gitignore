@@ -31,3 +31,6 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# open data cache
+data/open_cache/
